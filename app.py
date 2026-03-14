@@ -5,7 +5,8 @@ Includes the Clinical Operations Manual, 11 SOPs, and 10 QRCs.
 """
 
 import streamlit as st
-from auth import require_auth, logout_button
+from datetime import datetime
+from auth import require_auth, logout_button, _get_client
 
 st.set_page_config(
     page_title="NOH Clinical Vault",
@@ -91,6 +92,9 @@ GLOBAL_CSS = """
         border-radius: 8px; font-size: 0.82rem; margin: 0.25rem 0.25rem 0.25rem 0;
         border: 1px solid #d0e0dd;
     }
+    .version-info {
+        font-size: 0.75rem; color: #888; margin-top: 0.25rem;
+    }
 </style>
 """
 
@@ -102,20 +106,92 @@ st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 user = require_auth()
 
 # ---------------------------------------------------------------------------
+# Supabase Storage helpers
+# ---------------------------------------------------------------------------
+BUCKET = "clinical-documents"
+SIGNED_URL_EXPIRY = 3600  # 1 hour
+
+
+@st.cache_data(ttl=300)
+def _list_bucket_files():
+    """List all files in the clinical-documents bucket. Cached 5 min."""
+    client = _get_client()
+    files = set()
+    for folder in ["manual", "sops", "qrcs"]:
+        try:
+            result = client.storage.from_(BUCKET).list(folder)
+            for f in result:
+                if f.get("name", "").endswith(".pdf"):
+                    files.add(f"{folder}/{f['name']}")
+            pass
+        except Exception:
+            pass
+    return files
+
+
+def get_signed_url(file_path: str) -> str:
+    """Generate a signed download URL for a file in Supabase Storage."""
+    client = _get_client()
+    result = client.storage.from_(BUCKET).create_signed_url(
+        file_path, SIGNED_URL_EXPIRY
+    )
+    return result.get("signedURL", "")
+
+
+def log_download(user_email: str, document_code: str, document_title: str):
+    """Log a download event to the vault_downloads audit table."""
+    client = _get_client()
+    try:
+        client.table("vault_downloads").insert({
+            "user_email": user_email,
+            "document_code": document_code,
+            "document_title": document_title,
+        }).execute()
+    except Exception:
+        pass  # Don't block download if audit logging fails
+
+
+# ---------------------------------------------------------------------------
 # Data definitions
 # ---------------------------------------------------------------------------
+# Storage path mapping: document code → file path in bucket
+STORAGE_PATHS = {
+    "MANUAL": "manual/NOH_Clinical_Operations_Manual_V1.0.pdf",
+    "SOP-001": "sops/SOP-001_Controlled_Drugs_Management.pdf",
+    "SOP-002": "sops/SOP-002_Major_Haemorrhage_Protocol.pdf",
+    "SOP-003": "sops/SOP-003_Normal_Labour_and_Delivery.pdf",
+    "SOP-004": "sops/SOP-004_Hypertensive_Disorders_in_Pregnancy.pdf",
+    "SOP-005": "sops/SOP-005_Shoulder_Dystocia_Management.pdf",
+    "SOP-006": "sops/SOP-006_Cord_Prolapse_Management.pdf",
+    "SOP-007": "sops/SOP-007_Caesarean_Section_Pathway.pdf",
+    "SOP-008": "sops/SOP-008_Neonatal_Resuscitation.pdf",
+    "SOP-009": "sops/SOP-009_HIV_in_Pregnancy_PMTCT.pdf",
+    "SOP-010": "sops/SOP-010_Referral_and_Inter-Facility_Transfer.pdf",
+    "SOP-011": "sops/SOP-011_Blood_Transfusion_and_MTP.pdf",
+    "QRC-001": "qrcs/QRC-001_PPH_Algorithm.pdf",
+    "QRC-002": "qrcs/QRC-002_Eclampsia_Algorithm.pdf",
+    "QRC-003": "qrcs/QRC-003_Partograph_Quick_Guide.pdf",
+    "QRC-004": "qrcs/QRC-004_Shoulder_Dystocia_HELPERR.pdf",
+    "QRC-005": "qrcs/QRC-005_Cord_Prolapse_Algorithm.pdf",
+    "QRC-006": "qrcs/QRC-006_Emergency_CS_Checklist.pdf",
+    "QRC-007": "qrcs/QRC-007_NLS_Algorithm.pdf",
+    "QRC-009": "qrcs/QRC-009_PMTCT_Quick_Reference.pdf",
+    "QRC-010": "qrcs/QRC-010_Transfer_Checklist.pdf",
+    "QRC-011": "qrcs/QRC-011_Massive_Transfusion_Protocol.pdf",
+}
+
 SOPS = [
-    {"code": "SOP-001", "title": "Controlled Drugs Management", "area": "Medicines", "status": "Awaiting CMO Review"},
-    {"code": "SOP-002", "title": "Major Haemorrhage Protocol", "area": "Emergency", "status": "Awaiting CMO Review"},
-    {"code": "SOP-003", "title": "Normal Labour and Delivery", "area": "Intrapartum", "status": "Awaiting CMO Review"},
-    {"code": "SOP-004", "title": "Hypertensive Disorders", "area": "Emergency", "status": "Awaiting CMO Review"},
-    {"code": "SOP-005", "title": "Shoulder Dystocia (HELPERR)", "area": "Emergency", "status": "Awaiting CMO Review"},
-    {"code": "SOP-006", "title": "Cord Prolapse", "area": "Emergency", "status": "Awaiting CMO Review"},
-    {"code": "SOP-007", "title": "Caesarean Section Pathway", "area": "Intrapartum", "status": "Awaiting CMO Review"},
-    {"code": "SOP-008", "title": "Neonatal Resuscitation (NLS)", "area": "Newborn", "status": "Awaiting CMO Review"},
-    {"code": "SOP-009", "title": "HIV in Pregnancy (PMTCT)", "area": "Antenatal", "status": "Awaiting CMO Review"},
-    {"code": "SOP-010", "title": "Referral and Inter-Facility Transfer", "area": "Operations", "status": "Awaiting CMO Review"},
-    {"code": "SOP-011", "title": "Blood Transfusion and MTP", "area": "Emergency", "status": "Awaiting CMO Review"},
+    {"code": "SOP-001", "title": "Controlled Drugs Management", "area": "Medicines", "version": "1.0"},
+    {"code": "SOP-002", "title": "Major Haemorrhage Protocol", "area": "Emergency", "version": "1.0"},
+    {"code": "SOP-003", "title": "Normal Labour and Delivery", "area": "Intrapartum", "version": "1.0"},
+    {"code": "SOP-004", "title": "Hypertensive Disorders", "area": "Emergency", "version": "1.0"},
+    {"code": "SOP-005", "title": "Shoulder Dystocia (HELPERR)", "area": "Emergency", "version": "1.0"},
+    {"code": "SOP-006", "title": "Cord Prolapse", "area": "Emergency", "version": "1.0"},
+    {"code": "SOP-007", "title": "Caesarean Section Pathway", "area": "Intrapartum", "version": "1.0"},
+    {"code": "SOP-008", "title": "Neonatal Resuscitation (NLS)", "area": "Newborn", "version": "1.0"},
+    {"code": "SOP-009", "title": "HIV in Pregnancy (PMTCT)", "area": "Antenatal", "version": "1.0"},
+    {"code": "SOP-010", "title": "Referral and Inter-Facility Transfer", "area": "Operations", "version": "1.0"},
+    {"code": "SOP-011", "title": "Blood Transfusion and MTP", "area": "Emergency", "version": "1.0"},
 ]
 
 QRC_COLOURS = {
@@ -125,16 +201,16 @@ QRC_COLOURS = {
 }
 
 QRCS = [
-    {"code": "QRC-001", "title": "PPH Algorithm", "colour": "RED", "status": "Awaiting CMO Review"},
-    {"code": "QRC-002", "title": "Eclampsia", "colour": "PURPLE", "status": "Awaiting CMO Review"},
-    {"code": "QRC-003", "title": "Partograph Guide", "colour": "BLUE", "status": "Awaiting CMO Review"},
-    {"code": "QRC-004", "title": "Shoulder Dystocia (HELPERR)", "colour": "GREEN", "status": "Awaiting CMO Review"},
-    {"code": "QRC-005", "title": "Cord Prolapse", "colour": "AMBER", "status": "Awaiting CMO Review"},
-    {"code": "QRC-006", "title": "Emergency CS Checklist", "colour": "DARK BLUE", "status": "Awaiting CMO Review"},
-    {"code": "QRC-007", "title": "NLS Algorithm", "colour": "BLUE", "status": "Awaiting CMO Review"},
-    {"code": "QRC-009", "title": "PMTCT Quick Reference", "colour": "ORANGE", "status": "Awaiting CMO Review"},
-    {"code": "QRC-010", "title": "Transfer Checklist", "colour": "TEAL", "status": "Awaiting CMO Review"},
-    {"code": "QRC-011", "title": "MTP", "colour": "DARK RED", "status": "Awaiting CMO Review"},
+    {"code": "QRC-001", "title": "PPH Algorithm", "colour": "RED", "version": "1.0"},
+    {"code": "QRC-002", "title": "Eclampsia", "colour": "PURPLE", "version": "1.0"},
+    {"code": "QRC-003", "title": "Partograph Guide", "colour": "BLUE", "version": "1.0"},
+    {"code": "QRC-004", "title": "Shoulder Dystocia (HELPERR)", "colour": "GREEN", "version": "1.0"},
+    {"code": "QRC-005", "title": "Cord Prolapse", "colour": "AMBER", "version": "1.0"},
+    {"code": "QRC-006", "title": "Emergency CS Checklist", "colour": "DARK BLUE", "version": "1.0"},
+    {"code": "QRC-007", "title": "NLS Algorithm", "colour": "BLUE", "version": "1.0"},
+    {"code": "QRC-009", "title": "PMTCT Quick Reference", "colour": "ORANGE", "version": "1.0"},
+    {"code": "QRC-010", "title": "Transfer Checklist", "colour": "TEAL", "version": "1.0"},
+    {"code": "QRC-011", "title": "MTP", "colour": "DARK RED", "version": "1.0"},
 ]
 
 MANUAL_CHAPTERS = [
@@ -166,6 +242,48 @@ AREA_ICONS = {
     "Antenatal": "\U0001fa7a",
     "Operations": "\U0001f4cb",
 }
+
+# ---------------------------------------------------------------------------
+# Determine document availability (check which PDFs exist in bucket)
+# ---------------------------------------------------------------------------
+try:
+    available_files = _list_bucket_files()
+except Exception:
+    available_files = set()
+
+
+def doc_is_available(code: str) -> bool:
+    """Check if a document's PDF exists in the storage bucket."""
+    path = STORAGE_PATHS.get(code, "")
+    return path in available_files
+
+
+# ---------------------------------------------------------------------------
+# Download button helper
+# ---------------------------------------------------------------------------
+def render_download_button(code: str, title: str, key: str):
+    """Render a download button — active if PDF is in bucket, disabled otherwise."""
+    user_email = getattr(user, "email", "unknown")
+    if doc_is_available(code):
+        if st.button(f"Download PDF", key=key, use_container_width=True, type="primary"):
+            file_path = STORAGE_PATHS[code]
+            url = get_signed_url(file_path)
+            if url:
+                log_download(user_email, code, title)
+                st.markdown(
+                    f'<meta http-equiv="refresh" content="0;url={url}">',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.error("Could not generate download link. Please try again.")
+    else:
+        st.button(
+            "PDF pending CMO approval",
+            disabled=True,
+            key=key,
+            use_container_width=True,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -222,10 +340,11 @@ HEADER_HTML = """
 st.markdown(HEADER_HTML, unsafe_allow_html=True)
 
 
-def status_html(status: str) -> str:
-    """Return an HTML badge for a document status."""
-    css_class = "status-approved" if status == "Approved" else "status-review"
-    return f'<span class="status-badge {css_class}">{status}</span>'
+def status_html(code: str) -> str:
+    """Return an HTML badge — Approved if PDF exists in bucket, else Awaiting CMO Review."""
+    if doc_is_available(code):
+        return '<span class="status-badge status-approved">Approved</span>'
+    return '<span class="status-badge status-review">Awaiting CMO Review</span>'
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +356,7 @@ if view == "Clinical Operations Manual":
         unsafe_allow_html=True,
     )
 
-    badge = status_html("Awaiting CMO Review")
+    badge = status_html("MANUAL")
     manual_html = f"""
     <div class="manual-card">
         <h3>NOH Clinical Operations Manual V1.0</h3>
@@ -251,6 +370,7 @@ if view == "Clinical Operations Manual":
             <span class="manual-stat"><strong>903 KB</strong></span>
             <span class="manual-stat">{badge}</span>
         </div>
+        <div class="version-info">Version 1.0</div>
     </div>
     """
     st.markdown(manual_html, unsafe_allow_html=True)
@@ -275,12 +395,7 @@ if view == "Clinical Operations Manual":
                 unsafe_allow_html=True,
             )
 
-    st.button(
-        "PDF pending CMO approval",
-        disabled=True,
-        use_container_width=True,
-        key="manual_download",
-    )
+    render_download_button("MANUAL", "Clinical Operations Manual V1.0", "manual_download")
 
 
 # ---------------------------------------------------------------------------
@@ -299,25 +414,21 @@ elif view == "Standard Operating Procedures (11)":
 
     for sop in filtered:
         icon = AREA_ICONS.get(sop["area"], "")
-        badge = status_html(sop["status"])
+        badge = status_html(sop["code"])
         sop_html = f"""
         <div class="doc-card">
             <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                 <div>
                     <div class="doc-code">{sop["code"]}</div>
                     <div class="doc-title">{sop["title"]}</div>
-                    <div class="doc-meta">{icon} {sop["area"]}</div>
+                    <div class="doc-meta">{icon} {sop["area"]} &nbsp;|&nbsp; v{sop["version"]}</div>
                 </div>
                 <div style="text-align:right;">{badge}</div>
             </div>
         </div>
         """
         st.markdown(sop_html, unsafe_allow_html=True)
-        st.button(
-            "PDF pending CMO approval",
-            disabled=True,
-            key=f"dl_{sop['code']}",
-        )
+        render_download_button(sop["code"], sop["title"], f"dl_{sop['code']}")
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +443,7 @@ elif view == "Quick Reference Cards (10)":
 
     for qrc in QRCS:
         hex_colour = QRC_COLOURS.get(qrc["colour"], "#999999")
-        badge = status_html(qrc["status"])
+        badge = status_html(qrc["code"])
         qrc_html = f"""
         <div class="doc-card" style="border-left: 4px solid {hex_colour};">
             <div style="display:flex; justify-content:space-between; align-items:flex-start;">
@@ -342,18 +453,14 @@ elif view == "Quick Reference Cards (10)":
                         <span class="qrc-dot" style="background:{hex_colour};"></span>
                         {qrc["title"]}
                     </div>
-                    <div class="doc-meta">Colour code: {qrc["colour"]}</div>
+                    <div class="doc-meta">Colour code: {qrc["colour"]} &nbsp;|&nbsp; v{qrc["version"]}</div>
                 </div>
                 <div style="text-align:right;">{badge}</div>
             </div>
         </div>
         """
         st.markdown(qrc_html, unsafe_allow_html=True)
-        st.button(
-            "PDF pending CMO approval",
-            disabled=True,
-            key=f"dl_{qrc['code']}",
-        )
+        render_download_button(qrc["code"], qrc["title"], f"dl_{qrc['code']}")
 
 
 # ---------------------------------------------------------------------------
