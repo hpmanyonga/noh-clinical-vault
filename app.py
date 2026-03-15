@@ -339,28 +339,113 @@ with col2:
         st.button("Download unavailable", disabled=True, key=f"dl_{code}", use_container_width=True)
 
 # ---------------------------------------------------------------------------
-# Inline PDF viewer — uses signed URL (Chrome blocks base64 data URIs)
+# Inline PDF viewer — uses PDF.js to render on canvas (bypasses all iframe blocks)
 # ---------------------------------------------------------------------------
 st.markdown(
     f'<div class="category-header">{title}</div>',
     unsafe_allow_html=True,
 )
 
-if signed_url:
+if pdf_data:
+    import base64
     import streamlit.components.v1 as components
-    # Use components.html which creates its own unrestricted iframe,
-    # then embed the PDF via an inner iframe pointing to the signed URL
+    b64 = base64.b64encode(pdf_data).decode("utf-8")
     components.html(
         f"""
-        <iframe
-            src="{signed_url}#toolbar=1&navpanes=1"
-            width="100%"
-            height="780"
-            style="border: 1px solid #e0e7e6; border-radius: 8px;"
-            allow="fullscreen">
-        </iframe>
+        <div id="pdf-controls" style="
+            display:flex; align-items:center; gap:12px;
+            padding:8px 12px; background:#f7faf9; border:1px solid #e0e7e6;
+            border-radius:8px 8px 0 0; font-family:Arial,sans-serif; font-size:14px;">
+            <button onclick="prevPage()" style="padding:4px 12px;cursor:pointer;border:1px solid #ccc;border-radius:4px;background:white;">Prev</button>
+            <span>Page <span id="page-num">1</span> of <span id="page-count">-</span></span>
+            <button onclick="nextPage()" style="padding:4px 12px;cursor:pointer;border:1px solid #ccc;border-radius:4px;background:white;">Next</button>
+            <span style="margin-left:auto;color:#888;font-size:12px;">Zoom:</span>
+            <button onclick="changeZoom(-0.25)" style="padding:4px 8px;cursor:pointer;border:1px solid #ccc;border-radius:4px;background:white;">-</button>
+            <button onclick="changeZoom(0.25)" style="padding:4px 8px;cursor:pointer;border:1px solid #ccc;border-radius:4px;background:white;">+</button>
+        </div>
+        <div id="pdf-container" style="
+            border:1px solid #e0e7e6; border-top:none; border-radius:0 0 8px 8px;
+            overflow-y:auto; height:750px; background:#525659; text-align:center;">
+        </div>
+
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+        <script>
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+            var pdfData = atob("{b64}");
+            var pdfDoc = null;
+            var currentPage = 1;
+            var currentScale = 1.5;
+
+            function renderAllPages() {{
+                var container = document.getElementById('pdf-container');
+                container.innerHTML = '';
+                for (var i = 1; i <= pdfDoc.numPages; i++) {{
+                    renderPage(i, container);
+                }}
+            }}
+
+            function renderPage(num, container) {{
+                pdfDoc.getPage(num).then(function(page) {{
+                    var scale = currentScale;
+                    var viewport = page.getViewport({{ scale: scale }});
+                    var canvas = document.createElement('canvas');
+                    canvas.style.display = 'block';
+                    canvas.style.margin = '10px auto';
+                    canvas.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+                    container.appendChild(canvas);
+
+                    var ctx = canvas.getContext('2d');
+                    page.render({{ canvasContext: ctx, viewport: viewport }});
+                }});
+            }}
+
+            function prevPage() {{
+                if (currentPage <= 1) return;
+                currentPage--;
+                renderSinglePage(currentPage);
+            }}
+
+            function nextPage() {{
+                if (currentPage >= pdfDoc.numPages) return;
+                currentPage++;
+                renderSinglePage(currentPage);
+            }}
+
+            function renderSinglePage(num) {{
+                document.getElementById('page-num').textContent = num;
+                var container = document.getElementById('pdf-container');
+                container.innerHTML = '';
+                pdfDoc.getPage(num).then(function(page) {{
+                    var viewport = page.getViewport({{ scale: currentScale }});
+                    var canvas = document.createElement('canvas');
+                    canvas.style.display = 'block';
+                    canvas.style.margin = '10px auto';
+                    canvas.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+                    container.appendChild(canvas);
+                    var ctx = canvas.getContext('2d');
+                    page.render({{ canvasContext: ctx, viewport: viewport }});
+                }});
+            }}
+
+            function changeZoom(delta) {{
+                currentScale = Math.max(0.5, Math.min(3.0, currentScale + delta));
+                renderSinglePage(currentPage);
+            }}
+
+            var loadingTask = pdfjsLib.getDocument({{ data: pdfData }});
+            loadingTask.promise.then(function(pdf) {{
+                pdfDoc = pdf;
+                document.getElementById('page-count').textContent = pdf.numPages;
+                renderSinglePage(1);
+            }});
+        </script>
         """,
-        height=800,
+        height=820,
         scrolling=False,
     )
     log_download(user_email, code, title)
