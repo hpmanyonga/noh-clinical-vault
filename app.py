@@ -112,46 +112,61 @@ BUCKET = "clinical-documents"
 SIGNED_URL_EXPIRY = 3600  # 1 hour
 
 
-def _auth_client():
-    """Return a Supabase client authenticated with the current user's session."""
-    from supabase import create_client
-    url, key = __import__("auth", fromlist=["_resolve_env"])._resolve_env()
-    client = create_client(url, key)
-    token = st.session_state.get("access_token", "")
-    if token:
-        client.postgrest.auth(token)
-        client.storage._client.headers["Authorization"] = f"Bearer {token}"
-    return client
+def _storage_headers():
+    """Return HTTP headers for authenticated Supabase Storage API calls."""
+    from auth import _resolve_env
+    url, key = _resolve_env()
+    token = st.session_state.get("access_token", key)
+    return url, {
+        "apikey": key,
+        "Authorization": f"Bearer {token}",
+    }
 
 
 def _list_bucket_files():
-    """List all files in the clinical-documents bucket."""
-    client = _auth_client()
+    """List all files in the clinical-documents bucket via REST API."""
+    import requests
+    url, headers = _storage_headers()
     files = set()
     for folder in ["manual", "sops", "qrcs"]:
         try:
-            result = client.storage.from_(BUCKET).list(folder)
-            for f in result:
-                name = f.get("name", "") if isinstance(f, dict) else ""
-                if name.endswith(".pdf"):
-                    files.add(f"{folder}/{name}")
+            resp = requests.post(
+                f"{url}/storage/v1/object/list/{BUCKET}",
+                headers=headers,
+                json={"prefix": folder, "limit": 100, "offset": 0},
+            )
+            if resp.ok:
+                for f in resp.json():
+                    name = f.get("name", "")
+                    if name.endswith(".pdf"):
+                        files.add(f"{folder}/{name}")
         except Exception:
             pass
     return files
 
 
 def get_signed_url(file_path: str) -> str:
-    """Generate a signed download URL for a file in Supabase Storage."""
-    client = _auth_client()
-    result = client.storage.from_(BUCKET).create_signed_url(
-        file_path, SIGNED_URL_EXPIRY
+    """Generate a signed download URL via REST API."""
+    import requests
+    url, headers = _storage_headers()
+    resp = requests.post(
+        f"{url}/storage/v1/object/sign/{BUCKET}/{file_path}",
+        headers=headers,
+        json={"expiresIn": SIGNED_URL_EXPIRY},
     )
-    return result.get("signedURL", "")
+    if resp.ok:
+        signed_path = resp.json().get("signedURL", "")
+        if signed_path:
+            return f"{url}/storage/v1{signed_path}"
+    return ""
 
 
 def log_download(user_email: str, document_code: str, document_title: str):
     """Log a download event to the vault_downloads audit table."""
-    client = _auth_client()
+    client = _get_client()
+    token = st.session_state.get("access_token", "")
+    if token:
+        client.postgrest.auth(token)
     try:
         client.table("vault_downloads").insert({
             "user_email": user_email,
