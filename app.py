@@ -347,15 +347,8 @@ st.markdown(
 )
 
 if signed_url:
-    pdf_display = f"""
-    <iframe
-        src="{signed_url}"
-        width="100%"
-        height="800px"
-        style="border: 1px solid #e0e7e6; border-radius: 8px;"
-    ></iframe>
-    """
-    st.markdown(pdf_display, unsafe_allow_html=True)
+    import streamlit.components.v1 as components
+    components.iframe(signed_url, height=800, scrolling=True)
     log_download(user_email, code, title)
 else:
     st.warning("PDF could not be loaded. Check storage permissions.")
