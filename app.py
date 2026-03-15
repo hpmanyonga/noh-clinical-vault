@@ -346,9 +346,26 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if signed_url:
+if pdf_data:
+    import base64
     import streamlit.components.v1 as components
-    components.iframe(signed_url, height=800, scrolling=True)
+    b64 = base64.b64encode(pdf_data).decode("utf-8")
+    # Use <object> tag with base64 data — works in Chrome unlike data: iframes
+    components.html(
+        f"""
+        <object
+            data="data:application/pdf;base64,{b64}"
+            type="application/pdf"
+            width="100%"
+            height="780px"
+            style="border: 1px solid #e0e7e6; border-radius: 8px;">
+            <p>Your browser cannot display this PDF inline.
+            <a href="{signed_url}" target="_blank">Click here to open it.</a></p>
+        </object>
+        """,
+        height=800,
+        scrolling=False,
+    )
     log_download(user_email, code, title)
 else:
     st.warning("PDF could not be loaded. Check storage permissions.")
