@@ -5,7 +5,7 @@ Includes the Clinical Operations Manual, 11 SOPs, and 10 QRCs.
 """
 
 import streamlit as st
-from datetime import datetime
+import requests
 from auth import require_auth, logout_button, _get_client
 
 st.set_page_config(
@@ -39,27 +39,11 @@ GLOBAL_CSS = """
     .brand-contact {
         text-align: right; font-size: 0.8rem; color: white !important; line-height: 1.6;
     }
-    .doc-card {
-        background: #ffffff; border: 1px solid #e0e7e6; border-radius: 10px;
-        padding: 1.1rem 1.25rem; margin-bottom: 0.75rem;
-        transition: box-shadow 0.2s ease, border-color 0.2s ease;
-    }
-    .doc-card:hover {
-        box-shadow: 0 4px 16px rgba(64, 136, 125, 0.12); border-color: #40887d;
-    }
-    .doc-code { font-weight: 700; font-size: 0.95rem; color: #40887d; margin-bottom: 0.15rem; }
-    .doc-title { font-size: 1rem; font-weight: 600; color: #1a1a1a; margin-bottom: 0.35rem; }
-    .doc-meta { font-size: 0.8rem; color: #666; }
     .status-badge {
         display: inline-block; padding: 0.2rem 0.65rem; border-radius: 20px;
         font-size: 0.75rem; font-weight: 600; margin-right: 0.5rem;
     }
-    .status-review { background: #fff3cd; color: #856404; }
     .status-approved { background: #d4edda; color: #155724; }
-    .qrc-dot {
-        display: inline-block; width: 12px; height: 12px; border-radius: 50%;
-        margin-right: 0.4rem; vertical-align: middle;
-    }
     .category-header {
         font-size: 1.15rem; font-weight: 700; color: #40887d;
         border-bottom: 2px solid #40887d; padding-bottom: 0.4rem;
@@ -82,18 +66,9 @@ GLOBAL_CSS = """
     .sidebar-tagline {
         font-size: 0.78rem; color: #888; text-align: center; margin-bottom: 1.25rem;
     }
-    .manual-card {
-        background: linear-gradient(135deg, #f0f9f7 0%, #e8f4f1 100%);
-        border: 2px solid #40887d; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;
-    }
-    .manual-card h3 { color: #40887d; margin: 0 0 0.5rem 0; font-size: 1.15rem; }
-    .manual-stat {
-        display: inline-block; background: white; padding: 0.4rem 0.8rem;
-        border-radius: 8px; font-size: 0.82rem; margin: 0.25rem 0.25rem 0.25rem 0;
-        border: 1px solid #d0e0dd;
-    }
-    .version-info {
-        font-size: 0.75rem; color: #888; margin-top: 0.25rem;
+    .qrc-dot {
+        display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+        margin-right: 0.4rem; vertical-align: middle;
     }
 </style>
 """
@@ -123,32 +98,8 @@ def _storage_headers():
     }
 
 
-def _list_bucket_files():
-    """List all files in the clinical-documents bucket via REST API."""
-    import requests
-    url, headers = _storage_headers()
-    headers["Content-Type"] = "application/json"
-    files = set()
-    for folder in ["manual", "sops", "qrcs"]:
-        try:
-            resp = requests.post(
-                f"{url}/storage/v1/object/list/{BUCKET}",
-                headers=headers,
-                json={"prefix": f"{folder}/", "limit": 100, "offset": 0},
-            )
-            if resp.ok:
-                for f in resp.json():
-                    name = f.get("name", "")
-                    if name and name.endswith(".pdf"):
-                        files.add(f"{folder}/{name}")
-        except Exception:
-            pass
-    return files
-
-
 def get_signed_url(file_path: str) -> str:
     """Generate a signed download URL via REST API."""
-    import requests
     url, headers = _storage_headers()
     resp = requests.post(
         f"{url}/storage/v1/object/sign/{BUCKET}/{file_path}",
@@ -160,6 +111,18 @@ def get_signed_url(file_path: str) -> str:
         if signed_path:
             return f"{url}/storage/v1{signed_path}"
     return ""
+
+
+def download_pdf_bytes(file_path: str) -> bytes | None:
+    """Download a PDF's raw bytes from storage for inline display."""
+    url, headers = _storage_headers()
+    resp = requests.get(
+        f"{url}/storage/v1/object/authenticated/{BUCKET}/{file_path}",
+        headers=headers,
+    )
+    if resp.ok:
+        return resp.content
+    return None
 
 
 def log_download(user_email: str, document_code: str, document_title: str):
@@ -175,13 +138,12 @@ def log_download(user_email: str, document_code: str, document_title: str):
             "document_title": document_title,
         }).execute()
     except Exception:
-        pass  # Don't block download if audit logging fails
+        pass
 
 
 # ---------------------------------------------------------------------------
 # Data definitions
 # ---------------------------------------------------------------------------
-# Storage path mapping: document code → file path in bucket
 STORAGE_PATHS = {
     "MANUAL": "manual/NOH_Clinical_Operations_Manual_V1.0.pdf",
     "SOP-001": "sops/SOP-001_Controlled_Drugs_Management.pdf",
@@ -207,18 +169,32 @@ STORAGE_PATHS = {
     "QRC-011": "qrcs/QRC-011_Massive_Transfusion_Protocol.pdf",
 }
 
-SOPS = [
-    {"code": "SOP-001", "title": "Controlled Drugs Management", "area": "Medicines", "version": "1.0"},
-    {"code": "SOP-002", "title": "Major Haemorrhage Protocol", "area": "Emergency", "version": "1.0"},
-    {"code": "SOP-003", "title": "Normal Labour and Delivery", "area": "Intrapartum", "version": "1.0"},
-    {"code": "SOP-004", "title": "Hypertensive Disorders", "area": "Emergency", "version": "1.0"},
-    {"code": "SOP-005", "title": "Shoulder Dystocia (HELPERR)", "area": "Emergency", "version": "1.0"},
-    {"code": "SOP-006", "title": "Cord Prolapse", "area": "Emergency", "version": "1.0"},
-    {"code": "SOP-007", "title": "Caesarean Section Pathway", "area": "Intrapartum", "version": "1.0"},
-    {"code": "SOP-008", "title": "Neonatal Resuscitation (NLS)", "area": "Newborn", "version": "1.0"},
-    {"code": "SOP-009", "title": "HIV in Pregnancy (PMTCT)", "area": "Antenatal", "version": "1.0"},
-    {"code": "SOP-010", "title": "Referral and Inter-Facility Transfer", "area": "Operations", "version": "1.0"},
-    {"code": "SOP-011", "title": "Blood Transfusion and MTP", "area": "Emergency", "version": "1.0"},
+# All documents in one flat list for the sidebar selector
+ALL_DOCS = [
+    {"code": "MANUAL", "title": "Clinical Operations Manual V1.0", "category": "Manual",
+     "description": "Comprehensive clinical governance manual covering all aspects of maternity and obstetric care at Network One Health facilities.",
+     "meta": "12 Chapters | 3 Appendices | 903 KB"},
+    {"code": "SOP-001", "title": "Controlled Drugs Management", "category": "SOP", "area": "Medicines"},
+    {"code": "SOP-002", "title": "Major Haemorrhage Protocol", "category": "SOP", "area": "Emergency"},
+    {"code": "SOP-003", "title": "Normal Labour and Delivery", "category": "SOP", "area": "Intrapartum"},
+    {"code": "SOP-004", "title": "Hypertensive Disorders in Pregnancy", "category": "SOP", "area": "Emergency"},
+    {"code": "SOP-005", "title": "Shoulder Dystocia (HELPERR)", "category": "SOP", "area": "Emergency"},
+    {"code": "SOP-006", "title": "Cord Prolapse", "category": "SOP", "area": "Emergency"},
+    {"code": "SOP-007", "title": "Caesarean Section Pathway", "category": "SOP", "area": "Intrapartum"},
+    {"code": "SOP-008", "title": "Neonatal Resuscitation (NLS)", "category": "SOP", "area": "Newborn"},
+    {"code": "SOP-009", "title": "HIV in Pregnancy (PMTCT)", "category": "SOP", "area": "Antenatal"},
+    {"code": "SOP-010", "title": "Referral and Inter-Facility Transfer", "category": "SOP", "area": "Operations"},
+    {"code": "SOP-011", "title": "Blood Transfusion and MTP", "category": "SOP", "area": "Emergency"},
+    {"code": "QRC-001", "title": "PPH Algorithm", "category": "QRC", "colour": "RED"},
+    {"code": "QRC-002", "title": "Eclampsia Algorithm", "category": "QRC", "colour": "PURPLE"},
+    {"code": "QRC-003", "title": "Partograph Quick Guide", "category": "QRC", "colour": "BLUE"},
+    {"code": "QRC-004", "title": "Shoulder Dystocia (HELPERR)", "category": "QRC", "colour": "GREEN"},
+    {"code": "QRC-005", "title": "Cord Prolapse Algorithm", "category": "QRC", "colour": "AMBER"},
+    {"code": "QRC-006", "title": "Emergency CS Checklist", "category": "QRC", "colour": "DARK BLUE"},
+    {"code": "QRC-007", "title": "NLS Algorithm", "category": "QRC", "colour": "BLUE"},
+    {"code": "QRC-009", "title": "PMTCT Quick Reference", "category": "QRC", "colour": "ORANGE"},
+    {"code": "QRC-010", "title": "Transfer Checklist", "category": "QRC", "colour": "TEAL"},
+    {"code": "QRC-011", "title": "Massive Transfusion Protocol", "category": "QRC", "colour": "DARK RED"},
 ]
 
 QRC_COLOURS = {
@@ -227,130 +203,52 @@ QRC_COLOURS = {
     "ORANGE": "#e67e22", "TEAL": "#40887d", "DARK RED": "#8b0000",
 }
 
-QRCS = [
-    {"code": "QRC-001", "title": "PPH Algorithm", "colour": "RED", "version": "1.0"},
-    {"code": "QRC-002", "title": "Eclampsia", "colour": "PURPLE", "version": "1.0"},
-    {"code": "QRC-003", "title": "Partograph Guide", "colour": "BLUE", "version": "1.0"},
-    {"code": "QRC-004", "title": "Shoulder Dystocia (HELPERR)", "colour": "GREEN", "version": "1.0"},
-    {"code": "QRC-005", "title": "Cord Prolapse", "colour": "AMBER", "version": "1.0"},
-    {"code": "QRC-006", "title": "Emergency CS Checklist", "colour": "DARK BLUE", "version": "1.0"},
-    {"code": "QRC-007", "title": "NLS Algorithm", "colour": "BLUE", "version": "1.0"},
-    {"code": "QRC-009", "title": "PMTCT Quick Reference", "colour": "ORANGE", "version": "1.0"},
-    {"code": "QRC-010", "title": "Transfer Checklist", "colour": "TEAL", "version": "1.0"},
-    {"code": "QRC-011", "title": "MTP", "colour": "DARK RED", "version": "1.0"},
-]
-
-MANUAL_CHAPTERS = [
-    "1. Governance and Accountability",
-    "2. Clinical Standards and Quality",
-    "3. Patient Safety",
-    "4. Antenatal Care",
-    "5. Intrapartum Care",
-    "6. Postnatal Care",
-    "7. Newborn Care",
-    "8. Obstetric Emergencies",
-    "9. Medicines Management",
-    "10. Infection Prevention and Control",
-    "11. Training and Competency",
-    "12. Business Continuity and Major Incident",
-]
-
-MANUAL_APPENDICES = [
-    "Appendix A: Document Register",
-    "Appendix B: Abbreviations and Definitions",
-    "Appendix C: Audit Tools",
-]
-
 AREA_ICONS = {
-    "Medicines": "\U0001f48a",
-    "Emergency": "\U0001f6a8",
-    "Intrapartum": "\U0001f476",
-    "Newborn": "\U0001f90d",
-    "Antenatal": "\U0001fa7a",
-    "Operations": "\U0001f4cb",
+    "Medicines": "\U0001f48a", "Emergency": "\U0001f6a8",
+    "Intrapartum": "\U0001f476", "Newborn": "\U0001f90d",
+    "Antenatal": "\U0001fa7a", "Operations": "\U0001f4cb",
 }
 
-# ---------------------------------------------------------------------------
-# Determine document availability (check which PDFs exist in bucket)
-# ---------------------------------------------------------------------------
-try:
-    available_files = _list_bucket_files()
-except Exception as e:
-    available_files = set()
-
-# Temporary debug — remove after confirming
-with st.expander("Debug: Storage check", expanded=False):
-    st.write(f"Files found in bucket: **{len(available_files)}**")
-    if available_files:
-        st.code("\n".join(sorted(available_files)))
-    else:
-        st.warning("No files detected. Check bucket RLS policies and folder structure.")
-
-
-def doc_is_available(code: str) -> bool:
-    """Check if a document's PDF exists in the storage bucket."""
-    path = STORAGE_PATHS.get(code, "")
-    return path in available_files
-
 
 # ---------------------------------------------------------------------------
-# Download button helper
-# ---------------------------------------------------------------------------
-def render_download_button(code: str, title: str, key: str):
-    """Render a download button — active if PDF is in bucket, disabled otherwise."""
-    user_email = getattr(user, "email", "unknown")
-    if doc_is_available(code):
-        if st.button(f"Download PDF", key=key, use_container_width=True, type="primary"):
-            file_path = STORAGE_PATHS[code]
-            url = get_signed_url(file_path)
-            if url:
-                log_download(user_email, code, title)
-                st.markdown(
-                    f'<meta http-equiv="refresh" content="0;url={url}">',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.error("Could not generate download link. Please try again.")
-    else:
-        st.button(
-            "PDF pending CMO approval",
-            disabled=True,
-            key=key,
-            use_container_width=True,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Sidebar
+# Sidebar — document selector
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown(
-        '<div class="sidebar-logo">NOH Clinical Vault</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<div class="sidebar-tagline">Secure Document Repository</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="sidebar-logo">NOH Clinical Vault</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-tagline">Secure Document Repository</div>', unsafe_allow_html=True)
     st.divider()
 
-    view = st.radio(
-        "Document Category",
-        [
-            "Clinical Operations Manual",
-            "Standard Operating Procedures (11)",
-            "Quick Reference Cards (10)",
-        ],
-        index=0,
+    # Category filter
+    category = st.radio(
+        "Category",
+        ["All Documents", "Manual", "SOPs", "Quick Reference Cards"],
         label_visibility="collapsed",
     )
 
+    # Filter documents by category
+    if category == "Manual":
+        filtered_docs = [d for d in ALL_DOCS if d["category"] == "Manual"]
+    elif category == "SOPs":
+        filtered_docs = [d for d in ALL_DOCS if d["category"] == "SOP"]
+    elif category == "Quick Reference Cards":
+        filtered_docs = [d for d in ALL_DOCS if d["category"] == "QRC"]
+    else:
+        filtered_docs = ALL_DOCS
+
     st.divider()
 
+    # Document selector
+    doc_labels = [f"{d['code']} — {d['title']}" for d in filtered_docs]
+    selected_label = st.radio("Select a document to view:", doc_labels, label_visibility="visible")
+
+    # Find the selected document
+    selected_idx = doc_labels.index(selected_label) if selected_label in doc_labels else 0
+    selected_doc = filtered_docs[selected_idx]
+
+    st.divider()
     user_email = getattr(user, "email", "Authenticated user")
     st.caption(f"Signed in as **{user_email}**")
     logout_button()
-
     st.divider()
     st.caption("Phone: 011 458 2497")
     st.caption("WhatsApp: 066 499 2713")
@@ -375,127 +273,99 @@ HEADER_HTML = """
 st.markdown(HEADER_HTML, unsafe_allow_html=True)
 
 
-def status_html(code: str) -> str:
-    """Return an HTML badge — Approved if PDF exists in bucket, else Awaiting CMO Review."""
-    if doc_is_available(code):
-        return '<span class="status-badge status-approved">Approved</span>'
-    return '<span class="status-badge status-review">Awaiting CMO Review</span>'
-
-
 # ---------------------------------------------------------------------------
-# View: Clinical Operations Manual
+# Document viewer
 # ---------------------------------------------------------------------------
-if view == "Clinical Operations Manual":
+doc = selected_doc
+code = doc["code"]
+title = doc["title"]
+file_path = STORAGE_PATHS.get(code, "")
+
+# Document title bar
+col_title, col_badge = st.columns([4, 1])
+with col_title:
+    if doc["category"] == "QRC":
+        colour = doc.get("colour", "")
+        hex_colour = QRC_COLOURS.get(colour, "#999")
+        st.markdown(
+            f'<span class="qrc-dot" style="background:{hex_colour};"></span> '
+            f'**{code}** — {title}',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(f"**{code}** — {title}")
+with col_badge:
     st.markdown(
-        '<div class="category-header">Clinical Operations Manual</div>',
+        '<span class="status-badge status-approved">Approved</span>',
         unsafe_allow_html=True,
     )
 
-    badge = status_html("MANUAL")
-    manual_html = f"""
-    <div class="manual-card">
-        <h3>NOH Clinical Operations Manual V1.0</h3>
-        <p style="margin:0 0 0.75rem 0; font-size:0.9rem; color:#444;">
-            Comprehensive clinical governance manual covering all aspects of
-            maternity and obstetric care at Network One Health facilities.
-        </p>
-        <div>
-            <span class="manual-stat"><strong>12</strong> Chapters</span>
-            <span class="manual-stat"><strong>3</strong> Appendices</span>
-            <span class="manual-stat"><strong>903 KB</strong></span>
-            <span class="manual-stat">{badge}</span>
-        </div>
-        <div class="version-info">Version 1.0</div>
-    </div>
+# Show document metadata
+if doc.get("description"):
+    st.caption(doc["description"])
+if doc.get("meta"):
+    st.caption(doc["meta"])
+if doc.get("area"):
+    icon = AREA_ICONS.get(doc["area"], "")
+    st.caption(f"{icon} {doc['area']}")
+
+st.divider()
+
+# Action buttons — View (opens in new tab) and Download
+col1, col2, col3 = st.columns([1, 1, 2])
+
+with col1:
+    if st.button("Open in New Tab", key=f"view_{code}", use_container_width=True, type="primary"):
+        url = get_signed_url(file_path)
+        if url:
+            log_download(user_email, code, title)
+            st.markdown(
+                f'<script>window.open("{url}", "_blank");</script>',
+                unsafe_allow_html=True,
+            )
+            # Fallback for browsers that block scripts
+            st.markdown(f"[Click here if it didn't open automatically]({url})")
+        else:
+            st.error("Could not generate link. Please try again.")
+
+with col2:
+    # Download button using st.download_button for native browser download
+    pdf_data = download_pdf_bytes(file_path)
+    if pdf_data:
+        filename = file_path.split("/")[-1]
+        st.download_button(
+            label="Download PDF",
+            data=pdf_data,
+            file_name=filename,
+            mime="application/pdf",
+            key=f"dl_{code}",
+            use_container_width=True,
+        )
+    else:
+        st.button("Download unavailable", disabled=True, key=f"dl_{code}", use_container_width=True)
+
+# ---------------------------------------------------------------------------
+# Inline PDF viewer
+# ---------------------------------------------------------------------------
+st.markdown(
+    f'<div class="category-header">{title}</div>',
+    unsafe_allow_html=True,
+)
+
+if pdf_data:
+    import base64
+    b64_pdf = base64.b64encode(pdf_data).decode("utf-8")
+    pdf_display = f"""
+    <iframe
+        src="data:application/pdf;base64,{b64_pdf}"
+        width="100%"
+        height="800px"
+        style="border: 1px solid #e0e7e6; border-radius: 8px;"
+    ></iframe>
     """
-    st.markdown(manual_html, unsafe_allow_html=True)
-
-    st.markdown("##### Chapters")
-    cols = st.columns(2)
-    for i, ch in enumerate(MANUAL_CHAPTERS):
-        with cols[i % 2]:
-            st.markdown(
-                f'<div class="doc-card"><div class="doc-title">{ch}</div>'
-                f'<div class="doc-meta">Complete</div></div>',
-                unsafe_allow_html=True,
-            )
-
-    st.markdown("##### Appendices")
-    cols = st.columns(3)
-    for i, app_name in enumerate(MANUAL_APPENDICES):
-        with cols[i]:
-            st.markdown(
-                f'<div class="doc-card"><div class="doc-title">{app_name}</div>'
-                f'<div class="doc-meta">Complete</div></div>',
-                unsafe_allow_html=True,
-            )
-
-    render_download_button("MANUAL", "Clinical Operations Manual V1.0", "manual_download")
-
-
-# ---------------------------------------------------------------------------
-# View: Standard Operating Procedures
-# ---------------------------------------------------------------------------
-elif view == "Standard Operating Procedures (11)":
-    st.markdown(
-        '<div class="category-header">Standard Operating Procedures'
-        '<span class="cat-count">11</span></div>',
-        unsafe_allow_html=True,
-    )
-
-    areas = sorted(set(s["area"] for s in SOPS))
-    selected_area = st.selectbox("Filter by clinical area", ["All"] + areas)
-    filtered = SOPS if selected_area == "All" else [s for s in SOPS if s["area"] == selected_area]
-
-    for sop in filtered:
-        icon = AREA_ICONS.get(sop["area"], "")
-        badge = status_html(sop["code"])
-        sop_html = f"""
-        <div class="doc-card">
-            <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                <div>
-                    <div class="doc-code">{sop["code"]}</div>
-                    <div class="doc-title">{sop["title"]}</div>
-                    <div class="doc-meta">{icon} {sop["area"]} &nbsp;|&nbsp; v{sop["version"]}</div>
-                </div>
-                <div style="text-align:right;">{badge}</div>
-            </div>
-        </div>
-        """
-        st.markdown(sop_html, unsafe_allow_html=True)
-        render_download_button(sop["code"], sop["title"], f"dl_{sop['code']}")
-
-
-# ---------------------------------------------------------------------------
-# View: Quick Reference Cards
-# ---------------------------------------------------------------------------
-elif view == "Quick Reference Cards (10)":
-    st.markdown(
-        '<div class="category-header">Quick Reference Cards'
-        '<span class="cat-count">10</span></div>',
-        unsafe_allow_html=True,
-    )
-
-    for qrc in QRCS:
-        hex_colour = QRC_COLOURS.get(qrc["colour"], "#999999")
-        badge = status_html(qrc["code"])
-        qrc_html = f"""
-        <div class="doc-card" style="border-left: 4px solid {hex_colour};">
-            <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                <div>
-                    <div class="doc-code">{qrc["code"]}</div>
-                    <div class="doc-title">
-                        <span class="qrc-dot" style="background:{hex_colour};"></span>
-                        {qrc["title"]}
-                    </div>
-                    <div class="doc-meta">Colour code: {qrc["colour"]} &nbsp;|&nbsp; v{qrc["version"]}</div>
-                </div>
-                <div style="text-align:right;">{badge}</div>
-            </div>
-        </div>
-        """
-        st.markdown(qrc_html, unsafe_allow_html=True)
-        render_download_button(qrc["code"], qrc["title"], f"dl_{qrc['code']}")
+    st.markdown(pdf_display, unsafe_allow_html=True)
+else:
+    st.warning("PDF could not be loaded. Check storage permissions.")
 
 
 # ---------------------------------------------------------------------------
