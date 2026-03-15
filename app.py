@@ -346,22 +346,19 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if pdf_data:
-    import base64
+if signed_url:
     import streamlit.components.v1 as components
-    b64 = base64.b64encode(pdf_data).decode("utf-8")
-    # Use <object> tag with base64 data — works in Chrome unlike data: iframes
+    # Use components.html which creates its own unrestricted iframe,
+    # then embed the PDF via an inner iframe pointing to the signed URL
     components.html(
         f"""
-        <object
-            data="data:application/pdf;base64,{b64}"
-            type="application/pdf"
+        <iframe
+            src="{signed_url}#toolbar=1&navpanes=1"
             width="100%"
-            height="780px"
-            style="border: 1px solid #e0e7e6; border-radius: 8px;">
-            <p>Your browser cannot display this PDF inline.
-            <a href="{signed_url}" target="_blank">Click here to open it.</a></p>
-        </object>
+            height="780"
+            style="border: 1px solid #e0e7e6; border-radius: 8px;"
+            allow="fullscreen">
+        </iframe>
         """,
         height=800,
         scrolling=False,
