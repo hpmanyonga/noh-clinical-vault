@@ -112,18 +112,29 @@ BUCKET = "clinical-documents"
 SIGNED_URL_EXPIRY = 3600  # 1 hour
 
 
-@st.cache_data(ttl=300)
+def _auth_client():
+    """Return a Supabase client authenticated with the current user's session."""
+    from supabase import create_client
+    url, key = __import__("auth", fromlist=["_resolve_env"])._resolve_env()
+    client = create_client(url, key)
+    token = st.session_state.get("access_token", "")
+    if token:
+        client.postgrest.auth(token)
+        client.storage._client.headers["Authorization"] = f"Bearer {token}"
+    return client
+
+
 def _list_bucket_files():
-    """List all files in the clinical-documents bucket. Cached 5 min."""
-    client = _get_client()
+    """List all files in the clinical-documents bucket."""
+    client = _auth_client()
     files = set()
     for folder in ["manual", "sops", "qrcs"]:
         try:
             result = client.storage.from_(BUCKET).list(folder)
             for f in result:
-                if f.get("name", "").endswith(".pdf"):
-                    files.add(f"{folder}/{f['name']}")
-            pass
+                name = f.get("name", "") if isinstance(f, dict) else ""
+                if name.endswith(".pdf"):
+                    files.add(f"{folder}/{name}")
         except Exception:
             pass
     return files
@@ -131,7 +142,7 @@ def _list_bucket_files():
 
 def get_signed_url(file_path: str) -> str:
     """Generate a signed download URL for a file in Supabase Storage."""
-    client = _get_client()
+    client = _auth_client()
     result = client.storage.from_(BUCKET).create_signed_url(
         file_path, SIGNED_URL_EXPIRY
     )
@@ -140,7 +151,7 @@ def get_signed_url(file_path: str) -> str:
 
 def log_download(user_email: str, document_code: str, document_title: str):
     """Log a download event to the vault_downloads audit table."""
-    client = _get_client()
+    client = _auth_client()
     try:
         client.table("vault_downloads").insert({
             "user_email": user_email,
