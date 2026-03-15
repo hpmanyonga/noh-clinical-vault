@@ -311,25 +311,19 @@ if doc.get("area"):
 
 st.divider()
 
-# Action buttons — View (opens in new tab) and Download
+# Get a signed URL for this document (used for both viewing and open-in-new-tab)
+signed_url = get_signed_url(file_path)
+
+# Action buttons
 col1, col2, col3 = st.columns([1, 1, 2])
 
 with col1:
-    if st.button("Open in New Tab", key=f"view_{code}", use_container_width=True, type="primary"):
-        url = get_signed_url(file_path)
-        if url:
-            log_download(user_email, code, title)
-            st.markdown(
-                f'<script>window.open("{url}", "_blank");</script>',
-                unsafe_allow_html=True,
-            )
-            # Fallback for browsers that block scripts
-            st.markdown(f"[Click here if it didn't open automatically]({url})")
-        else:
-            st.error("Could not generate link. Please try again.")
+    if signed_url:
+        st.link_button("Open in New Tab", signed_url, use_container_width=True)
+    else:
+        st.button("Open in New Tab", disabled=True, key=f"view_{code}", use_container_width=True)
 
 with col2:
-    # Download button using st.download_button for native browser download
     pdf_data = download_pdf_bytes(file_path)
     if pdf_data:
         filename = file_path.split("/")[-1]
@@ -345,25 +339,24 @@ with col2:
         st.button("Download unavailable", disabled=True, key=f"dl_{code}", use_container_width=True)
 
 # ---------------------------------------------------------------------------
-# Inline PDF viewer
+# Inline PDF viewer — uses signed URL (Chrome blocks base64 data URIs)
 # ---------------------------------------------------------------------------
 st.markdown(
     f'<div class="category-header">{title}</div>',
     unsafe_allow_html=True,
 )
 
-if pdf_data:
-    import base64
-    b64_pdf = base64.b64encode(pdf_data).decode("utf-8")
+if signed_url:
     pdf_display = f"""
     <iframe
-        src="data:application/pdf;base64,{b64_pdf}"
+        src="{signed_url}"
         width="100%"
         height="800px"
         style="border: 1px solid #e0e7e6; border-radius: 8px;"
     ></iframe>
     """
     st.markdown(pdf_display, unsafe_allow_html=True)
+    log_download(user_email, code, title)
 else:
     st.warning("PDF could not be loaded. Check storage permissions.")
 
