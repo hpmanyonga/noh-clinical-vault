@@ -1,6 +1,7 @@
 """
-auth.py - Supabase authentication for NOH Clinical Vault
-Pattern consistent with all NOH Streamlit apps.
+auth.py - Supabase authentication for NOH apps
+Stores refresh token in browser query params to persist sessions across refreshes.
+Session lasts until Supabase refresh token expires (default 7 days, configurable in dashboard).
 """
 
 import streamlit as st
@@ -10,7 +11,6 @@ from supabase import create_client, Client
 def _resolve_env():
     """Resolve Supabase credentials: st.secrets first, os.getenv fallback."""
     import os
-
     try:
         url = st.secrets["SUPABASE_URL"]
         key = st.secrets["SUPABASE_KEY"]
@@ -29,12 +29,35 @@ def _get_client() -> Client:
     return create_client(url, key)
 
 
+def _try_restore_session():
+    """Try to restore session from refresh token stored in query params."""
+    params = st.query_params
+    rt = params.get("rt")
+    if not rt:
+        return None
+
+    try:
+        client = _get_client()
+        response = client.auth.refresh_session(rt)
+        if response and response.user:
+            st.session_state["user"] = response.user
+            st.session_state["access_token"] = response.session.access_token
+            st.session_state["refresh_token"] = response.session.refresh_token
+            # Update query param with new refresh token
+            st.query_params["rt"] = response.session.refresh_token
+            return response.user
+    except Exception:
+        # Refresh token expired or invalid — clear it
+        if "rt" in st.query_params:
+            del st.query_params["rt"]
+    return None
+
+
 def login_page():
-    """Render the login page with NOH Clinical Vault branding."""
+    """Render the login page with NOH branding."""
     st.markdown(
         """
         <style>
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
             .login-container {
                 max-width: 420px;
                 margin: 2rem auto;
@@ -72,7 +95,7 @@ def login_page():
         </style>
         <div class="login-container">
             <div class="login-title">Network One Health</div>
-            <div class="login-subtitle">Clinical Vault &mdash; Authorised access only</div>
+            <div class="login-subtitle">Authorised access only</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -82,11 +105,19 @@ def login_page():
 def require_auth():
     """
     Enforce Supabase email/password authentication.
-    Returns the authenticated user dict or stops the app.
+    Persists session via refresh token in URL query params.
+    Returns the authenticated user or stops the app.
     """
+    # 1. Already authenticated this session
     if "user" in st.session_state and st.session_state["user"] is not None:
         return st.session_state["user"]
 
+    # 2. Try to restore from refresh token in query params
+    restored_user = _try_restore_session()
+    if restored_user:
+        return restored_user
+
+    # 3. Show login form
     login_page()
 
     with st.container():
@@ -106,6 +137,9 @@ def require_auth():
                     )
                     st.session_state["user"] = response.user
                     st.session_state["access_token"] = response.session.access_token
+                    st.session_state["refresh_token"] = response.session.refresh_token
+                    # Store refresh token in URL query params for persistence
+                    st.query_params["rt"] = response.session.refresh_token
                     st.rerun()
                 except Exception as e:
                     st.error(f"Authentication failed: {e}")
@@ -127,6 +161,9 @@ def require_auth():
 def logout_button():
     """Render a logout button in the sidebar."""
     if st.sidebar.button("Sign Out", use_container_width=True):
-        for key in ["user", "access_token"]:
+        for key in ["user", "access_token", "refresh_token"]:
             st.session_state.pop(key, None)
+        # Clear the refresh token from URL
+        if "rt" in st.query_params:
+            del st.query_params["rt"]
         st.rerun()
