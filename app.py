@@ -127,18 +127,19 @@ def _list_bucket_files():
     """List all files in the clinical-documents bucket via REST API."""
     import requests
     url, headers = _storage_headers()
+    headers["Content-Type"] = "application/json"
     files = set()
     for folder in ["manual", "sops", "qrcs"]:
         try:
             resp = requests.post(
                 f"{url}/storage/v1/object/list/{BUCKET}",
                 headers=headers,
-                json={"prefix": folder, "limit": 100, "offset": 0},
+                json={"prefix": f"{folder}/", "limit": 100, "offset": 0},
             )
             if resp.ok:
                 for f in resp.json():
                     name = f.get("name", "")
-                    if name.endswith(".pdf"):
+                    if name and name.endswith(".pdf"):
                         files.add(f"{folder}/{name}")
         except Exception:
             pass
@@ -274,8 +275,16 @@ AREA_ICONS = {
 # ---------------------------------------------------------------------------
 try:
     available_files = _list_bucket_files()
-except Exception:
+except Exception as e:
     available_files = set()
+
+# Temporary debug — remove after confirming
+with st.expander("Debug: Storage check", expanded=False):
+    st.write(f"Files found in bucket: **{len(available_files)}**")
+    if available_files:
+        st.code("\n".join(sorted(available_files)))
+    else:
+        st.warning("No files detected. Check bucket RLS policies and folder structure.")
 
 
 def doc_is_available(code: str) -> bool:
